@@ -2,6 +2,7 @@
 pub enum Action {
     Show,
     Hide,
+    ToggleVisible,
     TogglePin,
     Reconnect,
     Exit,
@@ -45,7 +46,7 @@ impl Tray {
         let icon = tray_icon::Icon::from_rgba(crate::platform::icon_rgba(), 32, 32)
             .map_err(|error| error.to_string())?;
         let icon = TrayIconBuilder::new()
-            .with_tooltip("微行情 · 左键显示，右键菜单")
+            .with_tooltip("微行情 · 左键显示 / 隐藏，右键菜单")
             .with_menu(Box::new(menu))
             .with_icon(icon)
             .with_menu_on_left_click(false)
@@ -69,7 +70,7 @@ impl Tray {
                     ..
                 }
             ) {
-                let _ = tx.send(Action::Show);
+                let _ = tx.send(Action::ToggleVisible);
                 ctx.request_repaint();
             }
         }));

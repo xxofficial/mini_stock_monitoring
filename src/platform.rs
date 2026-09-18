@@ -39,9 +39,9 @@ mod windows {
         Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect},
         System::Threading::CreateMutexW,
         UI::WindowsAndMessaging::{
-            FindWindowW, GetWindowRect, IsIconic, MB_ICONERROR, MB_OK, MessageBoxW, SW_RESTORE,
-            SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
-            ShowWindow,
+            FindWindowW, GetWindowRect, IsIconic, IsWindowVisible, MB_ICONERROR, MB_OK,
+            MessageBoxW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            SetForegroundWindow, SetWindowPos, ShowWindow,
         },
     };
 
@@ -92,11 +92,17 @@ mod windows {
         }
     }
 
-    fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
+    pub(crate) fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
         match window.window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
             _ => None,
         }
+    }
+
+    pub fn is_visible(window: &impl HasWindowHandle) -> Option<bool> {
+        let hwnd = hwnd(window)?;
+        // SAFETY: hwnd belongs to the live eframe window.
+        Some(unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 })
     }
 
     pub fn remove_native_border(window: &impl HasWindowHandle) {
@@ -133,7 +139,7 @@ mod windows {
         let hwnd = hwnd(window)?;
         let mut rect = RECT::default();
         // SAFETY: hwnd comes from the live eframe window; rect is writable.
-        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+        if unsafe { IsIconic(hwnd) != 0 || GetWindowRect(hwnd, &mut rect) == 0 } {
             None
         } else {
             Some([rect.left, rect.top])
@@ -209,6 +215,10 @@ pub fn single_instance() -> Option<InstanceGuard> {
 }
 #[cfg(not(windows))]
 pub fn position(_: &eframe::Frame) -> Option<[i32; 2]> {
+    None
+}
+#[cfg(not(windows))]
+pub fn is_visible(_: &eframe::Frame) -> Option<bool> {
     None
 }
 #[cfg(not(windows))]

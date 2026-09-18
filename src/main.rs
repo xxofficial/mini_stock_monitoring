@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod global_hotkey;
 mod platform;
 mod tray;
 mod ui;
@@ -17,6 +18,7 @@ fn main() {
         .with_title(platform::WINDOW_TITLE)
         .with_app_id("mini-stock-monitor")
         .with_decorations(false)
+        .with_taskbar(false)
         .with_transparent(true)
         .with_resizable(false)
         .with_inner_size([380.0, ui::initial_height(&settings)])

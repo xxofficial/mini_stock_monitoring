@@ -6,6 +6,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::hotkey::DEFAULT_VISIBILITY_HOTKEY;
 use crate::quote::normalize_symbol;
 
 pub const MAX_SYMBOLS: usize = 50;
@@ -28,6 +29,7 @@ pub struct Settings {
     pub poll_seconds: u64,
     pub feed_mode: FeedMode,
     pub position: Option<[i32; 2]>,
+    pub visibility_hotkey: Option<String>,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             poll_seconds: 3,
             feed_mode: FeedMode::Auto,
             position: None,
+            visibility_hotkey: Some(DEFAULT_VISIBILITY_HOTKEY.into()),
         }
     }
 }
@@ -211,5 +214,31 @@ mod tests {
             loaded.symbols,
             ["hk00700", "hk09988", "sh600519", "sz000001"]
         );
+    }
+
+    #[test]
+    fn old_settings_gain_the_default_hotkey_and_custom_or_disabled_keys_persist() {
+        let old: Settings =
+            serde_json::from_str(r#"{"opacity":0.5,"symbols":["hk00700"]}"#).unwrap();
+        assert_eq!(
+            old.visibility_hotkey.as_deref(),
+            Some(DEFAULT_VISIBILITY_HOTKEY)
+        );
+        assert_eq!(old.symbols, ["hk00700"]);
+        assert_eq!(old.opacity, 0.5);
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore {
+            path: directory.path().join("settings.json"),
+        };
+        for hotkey in [Some("Ctrl+Shift+F8".into()), None] {
+            let settings = Settings {
+                visibility_hotkey: hotkey.clone(),
+                ..old.clone()
+            };
+            store.save(&settings).unwrap();
+            let (loaded, warning) = store.load();
+            assert!(warning.is_none());
+            assert_eq!(loaded.visibility_hotkey, hotkey);
+        }
     }
 }

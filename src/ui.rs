@@ -11,12 +11,14 @@ use eframe::egui::{
 use mini_stock_monitor::{
     config::{ConfigStore, FeedMode, MAX_SYMBOLS, Settings},
     feed::{Feed, FeedConfig, Phase, Snapshot},
+    hotkey::{DEFAULT_VISIBILITY_HOTKEY, Hotkey},
     intraday::IntradayFeed,
     quote::{Quote, normalize_symbol, price_decimals},
     search::{MAX_QUERY_CHARS, MAX_RESULTS, SearchSnapshot, StockSearch},
 };
 
 use crate::{
+    global_hotkey::{GlobalHotkey, HotkeyEvent},
     platform,
     tray::{Action, Tray},
 };
@@ -65,6 +67,10 @@ pub struct StockApp {
     selected_match: Option<usize>,
     ime_composing: bool,
     tray: Option<Tray>,
+    hotkey: Option<GlobalHotkey>,
+    hotkey_draft: Option<Hotkey>,
+    hotkey_error: Option<String>,
+    window_visible: bool,
     settings_open: bool,
     add_open: bool,
     focus_add: bool,
@@ -90,7 +96,7 @@ impl StockApp {
         cc: &eframe::CreationContext<'_>,
         settings: Settings,
         store: ConfigStore,
-        warning: Option<String>,
+        mut warning: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         configure_style(&cc.egui_ctx);
         load_chinese_font(&cc.egui_ctx);
@@ -106,6 +112,27 @@ impl StockApp {
         let chart_ctx = cc.egui_ctx.clone();
         let intraday = IntradayFeed::spawn(Arc::new(move || chart_ctx.request_repaint()))?;
         let tray = Tray::new(cc.egui_ctx.clone()).ok();
+        let (mut hotkey, mut hotkey_error) = match GlobalHotkey::new(cc, cc.egui_ctx.clone()) {
+            Ok(hotkey) => (Some(hotkey), None),
+            Err(error) => (None, Some(error)),
+        };
+        if let Some(binding) = &settings.visibility_hotkey
+            && let Some(hotkey) = &mut hotkey
+        {
+            hotkey_error = binding
+                .parse::<Hotkey>()
+                .and_then(|binding| hotkey.set(Some(binding)))
+                .err();
+        }
+        if settings.visibility_hotkey.is_some() && hotkey_error.is_some() {
+            warning.get_or_insert_with(|| "显示 / 隐藏快捷键未生效，请到设置中修改。".into());
+        }
+        let hotkey_draft = settings
+            .visibility_hotkey
+            .as_deref()
+            .unwrap_or(DEFAULT_VISIBILITY_HOTKEY)
+            .parse()
+            .ok();
         let last_size = vec2(380.0, initial_height(&settings));
         Ok(Self {
             settings,
@@ -119,6 +146,10 @@ impl StockApp {
             selected_match: None,
             ime_composing: false,
             tray,
+            hotkey,
+            hotkey_draft,
+            hotkey_error,
+            window_visible: true,
             settings_open: false,
             add_open: false,
             focus_add: false,
@@ -182,21 +213,37 @@ impl StockApp {
     fn action(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::Show => {
+                self.window_visible = true;
                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                 self.apply_pin(ctx);
             }
             Action::Hide => {
-                if self.tray.is_some() {
+                self.cancel_hotkey_recording();
+                if self.tray.is_some() || self.hotkey.as_ref().is_some_and(GlobalHotkey::is_active)
+                {
+                    self.window_visible = false;
+                    self.window_drag = None;
+                    self.drag_released = false;
                     ctx.send_viewport_cmd(ViewportCommand::Visible(false));
                 } else {
-                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                    self.warning =
+                        Some("托盘和全局快捷键均不可用，请先在设置中启用快捷键再隐藏。".into());
                 }
             }
+            Action::ToggleVisible => self.action(
+                if self.window_visible {
+                    Action::Hide
+                } else {
+                    Action::Show
+                },
+                ctx,
+            ),
             Action::TogglePin => self.pin(ctx),
             Action::Reconnect => self.reconnect(),
             Action::Exit => {
+                self.cancel_hotkey_recording();
                 self.save();
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
@@ -945,6 +992,10 @@ impl StockApp {
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(8.0);
+        self.hotkey_settings(ui);
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
         ui.label(RichText::new("行情更新").size(15.0).strong());
         ui.add_space(5.0);
         let previous_mode = self.settings.feed_mode;
@@ -1020,6 +1071,126 @@ impl StockApp {
                 .color(MUTED),
         );
     }
+
+    fn apply_hotkey(&mut self, enabled: bool) {
+        let result = (|| {
+            let binding = if enabled {
+                Some(self.hotkey_draft.ok_or("请先点击录制按钮，再按下快捷键")?)
+            } else {
+                None
+            };
+            if let Some(hotkey) = &mut self.hotkey {
+                hotkey.set(binding)?;
+            } else if enabled {
+                return Err("全局快捷键初始化失败，请重启应用后重试".into());
+            }
+            Ok(binding.map(|binding| binding.to_string()))
+        })();
+        match result {
+            Ok(binding) => {
+                self.settings.visibility_hotkey = binding;
+                self.hotkey_error = None;
+                self.changed(false);
+            }
+            Err(error) => self.hotkey_error = Some(error),
+        }
+    }
+
+    fn cancel_hotkey_recording(&self) {
+        if let Some(hotkey) = &self.hotkey {
+            hotkey.cancel_recording();
+        }
+    }
+
+    fn hotkey_settings(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("一键显示 / 隐藏").size(15.0).strong());
+        ui.label(
+            RichText::new("不在任务栏显示 · 左键托盘图标也可切换")
+                .size(11.0)
+                .color(MUTED),
+        );
+        ui.add_space(5.0);
+        let recording = self.hotkey.as_ref().is_some_and(GlobalHotkey::is_recording);
+        ui.horizontal(|ui| {
+            let label = if recording {
+                "正在监听，请按快捷键…".into()
+            } else {
+                self.hotkey_draft.map_or_else(
+                    || "点击录制快捷键".into(),
+                    |binding| format!("录制：{binding}"),
+                )
+            };
+            if ui
+                .add_enabled(
+                    self.hotkey.is_some(),
+                    egui::Button::new(label)
+                        .selected(recording)
+                        .min_size(vec2(230.0, 30.0)),
+                )
+                .on_hover_text("点击后直接按下功能键或组合键，无需输入文字")
+                .clicked()
+                && let Some(hotkey) = &mut self.hotkey
+            {
+                self.hotkey_error = hotkey.begin_recording().err();
+            }
+            if recording {
+                if ui.button("取消").clicked() {
+                    self.cancel_hotkey_recording();
+                }
+            } else if ui
+                .add_enabled(self.hotkey_draft.is_some(), egui::Button::new("应用"))
+                .clicked()
+            {
+                self.apply_hotkey(true);
+            }
+        });
+        ui.label(
+            RichText::new(if recording {
+                "Esc 取消；录制期间不会触发窗口隐藏或退出"
+            } else {
+                "点击录制，直接按 F1–F8 或 Ctrl / Alt / Shift / Win 组合"
+            })
+            .size(10.5)
+            .color(MUTED),
+        );
+        ui.horizontal(|ui| {
+            if ui.small_button("恢复默认").clicked() {
+                self.hotkey_draft = DEFAULT_VISIBILITY_HOTKEY.parse().ok();
+                self.apply_hotkey(true);
+            }
+            if ui
+                .add_enabled(
+                    self.settings.visibility_hotkey.is_some(),
+                    egui::Button::new("停用快捷键").small(),
+                )
+                .clicked()
+            {
+                self.apply_hotkey(false);
+            }
+        });
+        let active = self.hotkey.as_ref().is_some_and(GlobalHotkey::is_active);
+        let status = if active {
+            format!(
+                "当前生效：{} · 隐藏后仍可使用",
+                self.settings
+                    .visibility_hotkey
+                    .as_deref()
+                    .unwrap_or_default()
+            )
+        } else if self.settings.visibility_hotkey.is_none() {
+            "快捷键已停用，可通过托盘恢复窗口".into()
+        } else {
+            "快捷键未生效，可通过托盘恢复窗口".into()
+        };
+        ui.label(
+            RichText::new(status)
+                .size(11.0)
+                .color(if active { GREEN } else { MUTED }),
+        );
+        if let Some(error) = &self.hotkey_error {
+            ui.label(RichText::new(error).size(11.0).color(AMBER));
+        }
+    }
 }
 
 impl eframe::App for StockApp {
@@ -1068,12 +1239,38 @@ impl eframe::App for StockApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let events: Vec<_> = self
+        // Query the actual HWND so restoring through a second launch or Windows
+        // cannot leave the next toggle using a stale local visibility flag.
+        if let Some(visible) = platform::is_visible(frame) {
+            self.window_visible = visible;
+        }
+        if !self.settings_open || !self.window_visible {
+            self.cancel_hotkey_recording();
+        }
+        let mut events: Vec<_> = self
             .tray
             .as_ref()
             .map(|tray| tray.events.try_iter().collect())
             .unwrap_or_default();
+        if let Some(hotkey) = &self.hotkey {
+            for event in hotkey.events.try_iter() {
+                match event {
+                    HotkeyEvent::Toggle => events.push(Action::ToggleVisible),
+                    HotkeyEvent::Recorded(binding) => {
+                        self.hotkey_draft = Some(binding);
+                        self.hotkey_error = None;
+                    }
+                    HotkeyEvent::RecordingError(error) => self.hotkey_error = Some(error),
+                    HotkeyEvent::RecordingCancelled => self.hotkey_error = None,
+                }
+            }
+        }
         for event in events {
+            if matches!(event, Action::Show)
+                || (matches!(event, Action::ToggleVisible) && !self.window_visible)
+            {
+                platform::restore_position(frame, self.settings.position);
+            }
             self.action(event, ctx);
         }
         if let Some(position) = platform::position(frame)
@@ -1133,7 +1330,7 @@ impl eframe::App for StockApp {
         self.search_snapshot = self.search.latest();
         let warning_height = if self.warning.is_some() { 34.0 } else { 0.0 };
         let desired_height = if self.settings_open {
-            566.0
+            660.0
         } else if self.chart_symbol.is_some() {
             500.0
         } else {
@@ -1174,7 +1371,11 @@ impl eframe::App for StockApp {
                     });
                 }
                 if self.settings_open {
-                    self.settings_panel(ui, &snapshot);
+                    egui::ScrollArea::vertical()
+                        .id_salt("settings-scroll")
+                        .auto_shrink([false, false])
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| self.settings_panel(ui, &snapshot));
                 } else if let Some(symbol) = self.chart_symbol.clone() {
                     self.intraday_panel(ui, &symbol, &snapshot);
                 } else {
@@ -1187,6 +1388,9 @@ impl eframe::App for StockApp {
         if self.drag_released {
             self.window_drag = None;
             self.drag_released = false;
+        }
+        if !self.settings_open {
+            self.cancel_hotkey_recording();
         }
         let request = (self.chart_symbol.clone(), self.paused || self.settings_open);
         if self.chart_request.as_ref() != Some(&request) {
