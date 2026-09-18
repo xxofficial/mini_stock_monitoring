@@ -178,9 +178,12 @@ async fn fetch_matches(
 ) -> Result<Vec<StockMatch>, String> {
     // This service uses path parameters, not a URL query string. Encode every
     // non-unreserved UTF-8 byte so input cannot add parameters or fragments.
-    let key = normalize_symbol(query).unwrap_or_else(|_| query.to_owned());
     // Sina search uses bare five-digit HK codes (hk00700 returns no results).
-    let key = key.strip_prefix("hk").unwrap_or(&key);
+    let key = match normalize_symbol(query) {
+        Ok(symbol) if symbol.starts_with("hk") => symbol[2..].to_owned(),
+        Ok(symbol) => symbol,
+        Err(_) => query.to_owned(),
+    };
     let encoded: String = key
         .bytes()
         .map(|byte| match byte {

@@ -20,6 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = http_client()?;
     for source in [Source::TencentHttp, Source::SinaHttp] {
         let parsed = fetch_http(&client, &endpoints, &symbols, source).await?;
+        let missing: Vec<_> = symbols
+            .iter()
+            .filter(|symbol| !parsed.quotes.iter().any(|quote| &quote.symbol == *symbol))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!("{} missing quotes: {missing:?}", source.label()).into());
+        }
         println!("{}: {} quotes", source.label(), parsed.quotes.len());
         for quote in parsed.quotes {
             println!(

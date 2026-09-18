@@ -11,7 +11,8 @@ use eframe::egui::{
 use mini_stock_monitor::{
     config::{ConfigStore, FeedMode, MAX_SYMBOLS, Settings},
     feed::{Feed, FeedConfig, Phase, Snapshot},
-    quote::{Quote, normalize_symbol},
+    intraday::IntradayFeed,
+    quote::{Quote, normalize_symbol, price_decimals},
     search::{MAX_QUERY_CHARS, MAX_RESULTS, SearchSnapshot, StockSearch},
 };
 
@@ -19,6 +20,8 @@ use crate::{
     platform,
     tray::{Action, Tray},
 };
+
+mod intraday_chart;
 
 const TEXT: Color32 = Color32::from_rgb(236, 240, 245);
 const MUTED: Color32 = Color32::from_rgb(139, 151, 168);
@@ -54,6 +57,9 @@ pub struct StockApp {
     settings: Settings,
     store: ConfigStore,
     feed: Feed,
+    intraday: IntradayFeed,
+    chart_symbol: Option<String>,
+    chart_request: Option<(Option<String>, bool)>,
     search: StockSearch,
     search_snapshot: SearchSnapshot,
     selected_match: Option<usize>,
@@ -97,12 +103,17 @@ impl StockApp {
         )?;
         let search_ctx = cc.egui_ctx.clone();
         let search = StockSearch::spawn(Arc::new(move || search_ctx.request_repaint()))?;
+        let chart_ctx = cc.egui_ctx.clone();
+        let intraday = IntradayFeed::spawn(Arc::new(move || chart_ctx.request_repaint()))?;
         let tray = Tray::new(cc.egui_ctx.clone()).ok();
         let last_size = vec2(380.0, initial_height(&settings));
         Ok(Self {
             settings,
             store,
             feed,
+            intraday,
+            chart_symbol: None,
+            chart_request: None,
             search,
             search_snapshot: SearchSnapshot::default(),
             selected_match: None,
@@ -134,6 +145,10 @@ impl StockApp {
         let mut config = FeedConfig::from(&self.settings);
         config.paused = self.paused;
         self.feed.configure(config);
+        self.intraday.request(
+            self.chart_symbol.as_deref(),
+            self.paused || self.settings_open,
+        );
     }
 
     fn pin(&mut self, ctx: &egui::Context) {
@@ -348,6 +363,7 @@ impl StockApp {
 
     fn open_add(&mut self) {
         self.settings_open = false;
+        self.chart_symbol = None;
         self.add_open = true;
         self.focus_add = true;
         self.refresh_search();
@@ -627,9 +643,20 @@ impl StockApp {
                     if !cfg!(windows) && response.drag_started_by(egui::PointerButton::Primary) {
                         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                     }
+                    if response.clicked()
+                        && !self.window_drag.as_ref().is_some_and(|drag| drag.moved)
+                    {
+                        self.chart_symbol = Some(symbol.clone());
+                        self.close_add();
+                    }
                     response.context_menu(|ui| {
                         ui.label(quote.map(|q| q.name.as_str()).unwrap_or(symbol));
                         ui.separator();
+                        if ui.button("查看分时走势").clicked() {
+                            self.chart_symbol = Some(symbol.clone());
+                            self.close_add();
+                            ui.close();
+                        }
                         if ui
                             .add_enabled(index > 0, egui::Button::new("上移"))
                             .clicked()
@@ -687,7 +714,7 @@ impl StockApp {
         ui.add_space(5.0);
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new("拖动任意行情行 · 右键管理")
+                RichText::new("点击看分时 · 拖动移动 · 右键管理")
                     .size(10.0)
                     .color(MUTED),
             );
@@ -700,6 +727,183 @@ impl StockApp {
                     .on_hover_text("最近一条行情的源时间；各股票时间见悬停详情");
             });
         });
+    }
+
+    fn intraday_panel(&mut self, ui: &mut egui::Ui, symbol: &str, quotes: &Snapshot) {
+        let snapshot = self.intraday.latest();
+        let series = snapshot
+            .series
+            .as_deref()
+            .filter(|series| series.symbol == symbol);
+        ui.horizontal(|ui| {
+            if ui.button("‹ 自选列表").clicked() {
+                self.chart_symbol = None;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let index = self
+                    .settings
+                    .symbols
+                    .iter()
+                    .position(|item| item == symbol)
+                    .unwrap_or(0);
+                if ui
+                    .add_enabled(
+                        index + 1 < self.settings.symbols.len(),
+                        egui::Button::new("下一只 ›"),
+                    )
+                    .clicked()
+                {
+                    self.chart_symbol = self.settings.symbols.get(index + 1).cloned();
+                }
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("‹ 上一只"))
+                    .clicked()
+                {
+                    self.chart_symbol = self.settings.symbols.get(index - 1).cloned();
+                }
+            });
+        });
+        ui.add_space(7.0);
+        let quote = quotes.quotes.get(symbol);
+        let name = series
+            .map(|s| s.name.as_str())
+            .or_else(|| quote.map(|q| q.name.as_str()))
+            .unwrap_or(symbol);
+        ui.add(egui::Label::new(RichText::new(name).size(17.0).strong()).truncate())
+            .on_hover_text(name);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} {} · 分时",
+                    symbol[..2].to_uppercase(),
+                    &symbol[2..]
+                ))
+                .size(10.5)
+                .color(MUTED),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(series) = series {
+                    ui.label(
+                        RichText::new(series.date.format("%Y-%m-%d").to_string())
+                            .monospace()
+                            .size(10.5)
+                            .color(MUTED),
+                    );
+                }
+            });
+        });
+        let decimals = price_decimals(symbol);
+        let price = series.and_then(|s| s.points.last()).map(|p| p.price);
+        let previous = series.and_then(|s| s.previous_close);
+        let change = price
+            .zip(previous)
+            .map(|(price, previous)| (price / previous - 1.0) * 100.0);
+        let color = match change {
+            Some(value) if value > 0.0 => RED,
+            Some(value) if value < 0.0 => GREEN,
+            _ => MUTED,
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(
+                    price
+                        .map(|price| format!("{price:.decimals$}"))
+                        .unwrap_or_else(|| "—".into()),
+                )
+                .monospace()
+                .size(25.0)
+                .color(color),
+            );
+            ui.label(
+                RichText::new(
+                    change
+                        .map(|change| format!("{change:+.2}%"))
+                        .unwrap_or_else(|| "—".into()),
+                )
+                .monospace()
+                .size(13.0)
+                .color(color),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(
+                        previous
+                            .map(|p| format!("昨收 {p:.decimals$}"))
+                            .unwrap_or_else(|| "昨收 —".into()),
+                    )
+                    .size(10.5)
+                    .color(MUTED),
+                );
+            });
+        });
+        ui.add_space(4.0);
+        if let Some(series) = series {
+            intraday_chart::show(ui, series);
+        } else {
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 216.0), Sense::hover());
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                if self.paused {
+                    "已暂停更新"
+                } else if snapshot.loading || snapshot.symbol.as_deref() != Some(symbol) {
+                    "正在加载分时走势…"
+                } else {
+                    "暂时无法显示分时走势"
+                },
+                FontId::proportional(13.0),
+                MUTED,
+            );
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let label = if self.paused {
+                "已暂停更新"
+            } else if snapshot.loading {
+                "正在刷新…"
+            } else {
+                "腾讯分时 · 盘中约 15 秒刷新"
+            };
+            ui.label(RichText::new(label).size(10.5).color(MUTED));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(!self.paused && !snapshot.loading, egui::Button::new("刷新"))
+                    .clicked()
+                {
+                    self.intraday.request(Some(symbol), false);
+                }
+            });
+        });
+        if let Some(error) = &snapshot.error {
+            ui.label(
+                RichText::new(format!(
+                    "{error}{}",
+                    if series.is_some() {
+                        " · 显示上次数据"
+                    } else {
+                        ""
+                    }
+                ))
+                .size(10.5)
+                .color(AMBER),
+            );
+        } else {
+            let today = Utc::now()
+                .with_timezone(&FixedOffset::east_opt(28800).expect("UTC+8"))
+                .date_naive();
+            ui.label(
+                RichText::new(if series.is_some_and(|s| s.date < today) {
+                    "显示最近交易日数据 · 以图中日期为准"
+                } else if symbol.starts_with("hk") {
+                    "原币报价 · 午休已折叠 · 含收市竞价"
+                } else {
+                    "午休已折叠 · 虚线为昨收 · Esc 返回"
+                })
+                .size(10.0)
+                .color(MUTED),
+            );
+        }
     }
 
     fn settings_panel(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
@@ -899,10 +1103,6 @@ impl eframe::App for StockApp {
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position.to_pos2()));
             }
         }
-        if self.drag_released {
-            self.window_drag = None;
-            self.drag_released = false;
-        }
         self.drag_regions.clear();
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma)) {
             self.settings_open = !self.settings_open;
@@ -922,7 +1122,11 @@ impl eframe::App for StockApp {
             })
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            self.settings_open = false;
+            if self.settings_open {
+                self.settings_open = false;
+            } else {
+                self.chart_symbol = None;
+            }
             self.close_add();
         }
 
@@ -930,6 +1134,8 @@ impl eframe::App for StockApp {
         let warning_height = if self.warning.is_some() { 34.0 } else { 0.0 };
         let desired_height = if self.settings_open {
             566.0
+        } else if self.chart_symbol.is_some() {
+            500.0
         } else {
             initial_height(&self.settings) + self.add_height()
         } + warning_height;
@@ -969,6 +1175,8 @@ impl eframe::App for StockApp {
                 }
                 if self.settings_open {
                     self.settings_panel(ui, &snapshot);
+                } else if let Some(symbol) = self.chart_symbol.clone() {
+                    self.intraday_panel(ui, &symbol, &snapshot);
                 } else {
                     self.watchlist(ui, &snapshot);
                 }
@@ -976,6 +1184,16 @@ impl eframe::App for StockApp {
                     ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                 }
             });
+        if self.drag_released {
+            self.window_drag = None;
+            self.drag_released = false;
+        }
+        let request = (self.chart_symbol.clone(), self.paused || self.settings_open);
+        if self.chart_request.as_ref() != Some(&request) {
+            self.intraday.request(request.0.as_deref(), request.1);
+            self.chart_request = Some(request);
+            ctx.request_repaint();
+        }
         ctx.request_repaint_after(Duration::from_secs(30));
     }
 
@@ -1118,13 +1336,13 @@ fn quote_row(
                 .unwrap_or_else(|| "—".into())
         };
         format!(
-            "{} · {}\n{}\n行情时间：{}（{}）\n昨收 {}    今开 {}\n最高 {}    最低 {}\n{}\n右键可调整顺序或移除",
+            "{} · {}\n{}\n行情时间：{}（{}）\n昨收 {}    今开 {}\n最高 {}    最低 {}\n{}\n点击查看分时；右键可调整顺序或移除",
             quote.name,
             symbol,
             if symbol.starts_with("hk") {
                 "港股 · 原币报价（未作汇率换算）"
             } else {
-                "沪深 · 人民币报价"
+                "沪深 · 原币报价"
             },
             quote.quote_time.format("%Y-%m-%d %H:%M:%S"),
             age_text,
@@ -1344,5 +1562,25 @@ mod tests {
             symbol_to_add("sz000001", &snapshot, None).as_deref(),
             Some("sz000001")
         );
+    }
+
+    #[test]
+    fn hk_codes_and_name_matches_resolve_to_the_same_watchlist_symbol() {
+        let mut snapshot = SearchSnapshot::default();
+        snapshot.query = "腾讯".into();
+        snapshot.matches = vec![StockMatch {
+            symbol: "hk00700".into(),
+            name: "腾讯控股".into(),
+        }];
+        assert_eq!(
+            symbol_to_add("腾讯", &snapshot, None).as_deref(),
+            Some("hk00700")
+        );
+        for code in ["00700", "hk00700", "700.HK"] {
+            assert_eq!(
+                symbol_to_add(code, &SearchSnapshot::default(), None).as_deref(),
+                Some("hk00700")
+            );
+        }
     }
 }

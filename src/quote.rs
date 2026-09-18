@@ -45,15 +45,19 @@ impl Quote {
     }
 
     pub fn decimals(&self) -> usize {
-        if self.symbol.starts_with("hk")
-            || self.symbol.starts_with("sh5")
-            || self.symbol.starts_with("sz15")
-            || self.symbol.starts_with("sz16")
-        {
-            3
-        } else {
-            2
-        }
+        price_decimals(&self.symbol)
+    }
+}
+
+pub fn price_decimals(symbol: &str) -> usize {
+    if symbol.starts_with("hk")
+        || symbol.starts_with("sh5")
+        || symbol.starts_with("sz15")
+        || symbol.starts_with("sz16")
+    {
+        3
+    } else {
+        2
     }
 }
 

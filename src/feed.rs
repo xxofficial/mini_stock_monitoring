@@ -529,6 +529,88 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const QUOTE: &str = "sh600519=贵州茅台,1262.990,1266.980,1257.120,1265.880,1256.100,1257.120,1257.130,2489087,3135849108.000,831,1257.120,200,1257.110,100,1257.080,200,1257.060,200,1257.050,100,1257.130,200,1257.240,100,1257.280,1600,1258.000,100,1258.280,2026-09-18,15:34:59,00";
+    const HK_QUOTE: &str = "rt_hk00700=TENCENT,腾讯控股,428.000,426.000,430.400,419.000,419.000,-7.000,-1.643,418.800,419.000,12180786280.956,28796138,15.229,0.000,675.134,411.000,2026/09/18,16:08:32";
+
+    #[test]
+    fn hk_polling_covers_its_morning_and_later_close_without_changing_mainland_hours() {
+        let mainland = FeedConfig::from(&Settings::default());
+        let mut mixed = mainland.clone();
+        mixed.symbols.push("hk00700".into());
+        for (stamp, mainland_seconds, hk_seconds) in [
+            ("2026-09-18T09:05:00+08:00", 60, 3),
+            ("2026-09-18T10:30:00+08:00", 3, 3),
+            ("2026-09-18T11:50:00+08:00", 60, 3),
+            ("2026-09-18T12:09:00+08:00", 60, 3),
+            ("2026-09-18T12:30:00+08:00", 60, 60),
+            ("2026-09-18T15:30:00+08:00", 60, 3),
+            ("2026-09-18T16:09:00+08:00", 60, 3),
+            ("2026-09-18T16:16:00+08:00", 60, 60),
+            ("2026-09-19T10:30:00+08:00", 60, 60),
+        ] {
+            let now = DateTime::parse_from_rfc3339(stamp)
+                .unwrap()
+                .with_timezone(&Utc);
+            assert_eq!(
+                poll_interval(&mainland, now).as_secs(),
+                mainland_seconds,
+                "{stamp}"
+            );
+            assert_eq!(poll_interval(&mixed, now).as_secs(), hk_seconds, "{stamp}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sina_http_requests_hk_channel_and_returns_canonical_symbols() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoints = Endpoints {
+            sina_http: format!("http://{}/?list=", listener.local_addr().unwrap()),
+            ..Endpoints::default()
+        };
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0 && request.len() + count < 8192);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            assert!(
+                String::from_utf8_lossy(&request).starts_with("GET /?list=sh600519,rt_hk00700 ")
+            );
+            let payload = format!("{QUOTE}\n{HK_QUOTE}");
+            let (body, _, _) = encoding_rs::GB18030.encode(&payload);
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let symbols = vec!["sh600519".into(), "hk00700".into()];
+        let parsed = fetch_http(
+            &http_client().unwrap(),
+            &endpoints,
+            &symbols,
+            Source::SinaHttp,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            parsed
+                .quotes
+                .iter()
+                .map(|quote| quote.symbol.clone())
+                .collect::<Vec<_>>(),
+            symbols
+        );
+        server.await.unwrap();
+    }
 
     #[test]
     fn never_replaces_newer_prices_with_old_snapshots() {
@@ -628,15 +710,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::result_large_err,
+        reason = "tungstenite requires an HTTP response as its handshake callback error"
+    )]
     async fn streams_multiple_quotes_and_cancels_old_subscription_on_change() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (connection, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(connection).await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                connection,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(
+                        request.uri().query(),
+                        Some("list=sh600519,sz000001,rt_hk00700")
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
             socket
                 .send(Message::Text(
-                    format!("{QUOTE}\n{}", QUOTE.replace("sh600519", "sz000001")).into(),
+                    format!(
+                        "{QUOTE}\n{}\n{HK_QUOTE}",
+                        QUOTE.replace("sh600519", "sz000001")
+                    )
+                    .into(),
                 ))
                 .await
                 .unwrap();
@@ -644,7 +745,7 @@ mod tests {
         });
         let state = Arc::new(Mutex::new(Snapshot::default()));
         let settings = Settings {
-            symbols: vec!["sh600519".into(), "sz000001".into()],
+            symbols: vec!["sh600519".into(), "sz000001".into(), "hk00700".into()],
             ..Settings::default()
         };
         let (tx, rx) = watch::channel(FeedConfig::from(&settings));
@@ -661,13 +762,14 @@ mod tests {
             endpoints,
         ));
         time::timeout(Duration::from_secs(2), async {
-            while state.lock().unwrap().quotes.len() != 2 {
+            while state.lock().unwrap().quotes.len() != 3 {
                 time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .unwrap();
         assert_eq!(state.lock().unwrap().phase, Phase::Streaming);
+        assert_eq!(state.lock().unwrap().quotes["hk00700"].price, Some(419.0));
         tx.send_modify(|config| config.symbols.clear());
         time::timeout(Duration::from_secs(1), async {
             while state.lock().unwrap().phase != Phase::Idle {

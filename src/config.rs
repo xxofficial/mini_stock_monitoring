@@ -190,4 +190,26 @@ mod tests {
         assert_eq!(settings.poll_seconds, 2);
         assert_eq!(settings.opacity, 1.0);
     }
+
+    #[test]
+    fn mixed_hk_watchlist_survives_save_reload_and_deduplicates_code_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore {
+            path: directory.path().join("settings.json"),
+        };
+        let mut settings = Settings {
+            symbols: ["00700", "HK700", "700.HK", "09988", "600519", "000001"]
+                .map(str::to_owned)
+                .into(),
+            ..Settings::default()
+        };
+        settings.sanitize();
+        store.save(&settings).unwrap();
+        let (loaded, warning) = store.load();
+        assert!(warning.is_none());
+        assert_eq!(
+            loaded.symbols,
+            ["hk00700", "hk09988", "sh600519", "sz000001"]
+        );
+    }
 }
