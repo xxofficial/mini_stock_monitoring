@@ -1,0 +1,42 @@
+[package]
+name = "mini-stock-monitor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A small, transparent desktop stock monitor for Windows"
+default-run = "mini-stock-monitor"
+
+[lib]
+name = "mini_stock_monitor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mini-stock-monitor"
+path = "src/main.rs"
+
+[[bin]]
+name = "quote-check"
+path = "src/bin/quote_check.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+encoding_rs = "0.8"
+futures-util = { version = "0.3", features = ["sink"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+tray-icon = { version = "0.25", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
