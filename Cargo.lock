@@ -1926,6 +1926,7 @@ dependencies = [
  "tokio-tungstenite",
  "tray-icon",
  "windows-sys 0.61.2",
+ "winit",
 ]
 
 [[package]]

@@ -1345,14 +1345,11 @@ impl eframe::App for StockApp {
         let alpha = (self.settings.opacity * 255.0).round() as u8;
         egui::Frame::new()
             .fill(Color32::from_rgba_unmultiplied(17, 23, 34, alpha))
-            .stroke(Stroke::new(
-                1.0,
-                Color32::from_white_alpha((self.settings.opacity * 30.0) as u8),
-            ))
+            .stroke(Stroke::NONE)
             .corner_radius(12)
             .inner_margin(16)
             .show(ui, |ui| {
-                ui.set_min_size(desired - vec2(34.0, 34.0));
+                ui.set_min_size(desired - vec2(32.0, 32.0));
                 let background_drag = ui.interact(
                     ui.max_rect(),
                     ui.id().with("background-drag"),

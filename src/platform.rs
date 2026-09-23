@@ -105,10 +105,17 @@ mod windows {
         Some(unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 })
     }
 
-    pub fn remove_native_border(window: &impl HasWindowHandle) {
+    pub fn remove_native_border(window: &eframe::CreationContext<'_>) {
+        use winit::platform::windows::WindowExtWindows;
         use windows_sys::Win32::Graphics::Dwm::{
             DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DwmSetWindowAttribute,
         };
+        // egui-winit enables a native shadow for undecorated windows. winit
+        // reserves a 1px non-client strip at the top for it, even with the
+        // DWM border color disabled. Remove the shadow and its strip together.
+        if let Some(native_window) = window.winit_window() {
+            native_window.set_undecorated_shadow(false);
+        }
         let Some(hwnd) = hwnd(window) else {
             return;
         };
