@@ -21,12 +21,8 @@ fn main() {
         .with_taskbar(false)
         .with_transparent(true)
         .with_resizable(false)
-        .with_inner_size([380.0, ui::initial_height(&settings)])
-        .with_window_level(if settings.always_on_top {
-            egui::WindowLevel::AlwaysOnTop
-        } else {
-            egui::WindowLevel::Normal
-        })
+        .with_inner_size([ui::initial_width(&settings), ui::initial_height(&settings)])
+        .with_window_level(ui::window_level(&settings))
         .with_icon(egui::IconData {
             rgba: platform::icon_rgba(),
             width: 32,

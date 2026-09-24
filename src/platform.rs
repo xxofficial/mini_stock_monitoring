@@ -153,6 +153,31 @@ mod windows {
         }
     }
 
+    pub fn work_area(window: &impl HasWindowHandle) -> Option<[i32; 4]> {
+        let hwnd = hwnd(window)?;
+        let mut rect = RECT::default();
+        // SAFETY: hwnd comes from the live eframe window and all output structs are writable.
+        unsafe {
+            if GetWindowRect(hwnd, &mut rect) == 0 {
+                return None;
+            }
+            let monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info) == 0 {
+                return None;
+            }
+            Some([
+                info.rcWork.left,
+                info.rcWork.top,
+                info.rcWork.right,
+                info.rcWork.bottom,
+            ])
+        }
+    }
+
     pub fn restore_position(window: &impl HasWindowHandle, saved: Option<[i32; 2]>) {
         let Some(hwnd) = hwnd(window) else { return };
         // SAFETY: only a live app-owned HWND and stack-allocated Win32 structs are used.
@@ -222,6 +247,10 @@ pub fn single_instance() -> Option<InstanceGuard> {
 }
 #[cfg(not(windows))]
 pub fn position(_: &eframe::Frame) -> Option<[i32; 2]> {
+    None
+}
+#[cfg(not(windows))]
+pub fn work_area(_: &eframe::Frame) -> Option<[i32; 4]> {
     None
 }
 #[cfg(not(windows))]

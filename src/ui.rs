@@ -33,9 +33,36 @@ const MUTED: Color32 = Color32::from_rgb(139, 151, 168);
 const GREEN: Color32 = Color32::from_rgb(92, 213, 174);
 const RED: Color32 = Color32::from_rgb(255, 112, 126);
 const AMBER: Color32 = Color32::from_rgb(235, 188, 111);
+const STANDARD_WIDTH: f32 = 380.0;
+const MINIMAL_WIDTH: f32 = 300.0;
+const MINIMAL_ROW_HEIGHT: f32 = 30.0;
+const MINIMAL_MARGIN: f32 = 6.0;
+const MINIMAL_CHART_WIDTH: f32 = 380.0;
+const MINIMAL_CHART_HEIGHT: f32 = 276.0;
+
+pub fn initial_width(settings: &Settings) -> f32 {
+    if settings.minimal_mode {
+        MINIMAL_WIDTH
+    } else {
+        STANDARD_WIDTH
+    }
+}
+
+pub fn window_level(settings: &Settings) -> egui::WindowLevel {
+    if settings.minimal_mode || settings.always_on_top {
+        egui::WindowLevel::AlwaysOnTop
+    } else {
+        egui::WindowLevel::Normal
+    }
+}
 
 pub fn initial_height(settings: &Settings) -> f32 {
-    180.0 + settings.symbols.len().clamp(1, 7) as f32 * if settings.compact { 46.0 } else { 66.0 }
+    if settings.minimal_mode {
+        MINIMAL_MARGIN * 2.0 + settings.symbols.len().max(1) as f32 * MINIMAL_ROW_HEIGHT
+    } else {
+        180.0
+            + settings.symbols.len().clamp(1, 7) as f32 * if settings.compact { 46.0 } else { 66.0 }
+    }
 }
 
 fn symbol_to_add(
@@ -64,6 +91,8 @@ pub struct StockApp {
     feed: Feed,
     intraday: IntradayFeed,
     chart_symbol: Option<String>,
+    minimal_hover_symbol: Option<String>,
+    minimal_popup_placement: Option<MinimalPopupPlacement>,
     chart_request: Option<(Option<String>, bool)>,
     search: StockSearch,
     search_snapshot: SearchSnapshot,
@@ -97,6 +126,108 @@ struct WindowDrag {
     moved: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MinimalPopupPlacement {
+    anchor: [i32; 2],
+    origin: [i32; 2],
+    size: Vec2,
+    list_pos: Pos2,
+    chart_pos: Pos2,
+    chart_width: f32,
+}
+
+fn minimal_popup_placement(
+    anchor: [i32; 2],
+    work: [i32; 4],
+    pixels_per_point: f32,
+    list_height: f32,
+) -> MinimalPopupPlacement {
+    let scale = pixels_per_point.max(0.5);
+    let to_pixels = |points: f32| (points * scale).round() as i32;
+    let list_width = to_pixels(MINIMAL_WIDTH);
+    let list_height = to_pixels(list_height);
+    let work_width = (work[2] - work[0]).max(1);
+    let work_height = (work[3] - work[1]).max(1);
+    let chart_width = to_pixels(MINIMAL_CHART_WIDTH).min(work_width);
+    let chart_height = to_pixels(MINIMAL_CHART_HEIGHT).min(work_height);
+    let right_space = work[2] - (anchor[0] + list_width);
+    let left_space = anchor[0] - work[0];
+    let below_space = work[3] - (anchor[1] + list_height);
+    let above_space = anchor[1] - work[1];
+
+    let (chart_x, chart_y) = if right_space >= chart_width {
+        (
+            anchor[0] + list_width,
+            anchor[1].clamp(work[1], (work[3] - chart_height).max(work[1])),
+        )
+    } else if left_space >= chart_width {
+        (
+            anchor[0] - chart_width,
+            anchor[1].clamp(work[1], (work[3] - chart_height).max(work[1])),
+        )
+    } else {
+        let x = anchor[0].clamp(work[0], (work[2] - chart_width).max(work[0]));
+        let y = if below_space >= chart_height {
+            anchor[1] + list_height
+        } else if above_space >= chart_height {
+            anchor[1] - chart_height
+        } else {
+            anchor[1].clamp(work[1], (work[3] - chart_height).max(work[1]))
+        };
+        (x, y)
+    };
+
+    let origin = [anchor[0].min(chart_x), anchor[1].min(chart_y)];
+    let right = (anchor[0] + list_width).max(chart_x + chart_width);
+    let bottom = (anchor[1] + list_height).max(chart_y + chart_height);
+    MinimalPopupPlacement {
+        anchor,
+        origin,
+        size: vec2(
+            (right - origin[0]) as f32 / scale,
+            (bottom - origin[1]) as f32 / scale,
+        ),
+        list_pos: pos2(
+            (anchor[0] - origin[0]) as f32 / scale,
+            (anchor[1] - origin[1]) as f32 / scale,
+        ),
+        chart_pos: pos2(
+            (chart_x - origin[0]) as f32 / scale,
+            (chart_y - origin[1]) as f32 / scale,
+        ),
+        chart_width: chart_width as f32 / scale,
+    }
+}
+
+fn minimal_drag_pointer(pointer: Pos2, placement: Option<MinimalPopupPlacement>) -> Vec2 {
+    placement.map_or_else(
+        || pointer.to_vec2(),
+        |placement| pointer.to_vec2() - placement.list_pos.to_vec2(),
+    )
+}
+
+fn minimal_hovered_row(
+    cursor: [i32; 2],
+    anchor: [i32; 2],
+    pixels_per_point: f32,
+    row_count: usize,
+) -> Option<usize> {
+    if row_count == 0 {
+        return None;
+    }
+    let scale = pixels_per_point.max(0.5);
+    let left = anchor[0] as f32 + MINIMAL_MARGIN * scale;
+    let top = anchor[1] as f32 + MINIMAL_MARGIN * scale;
+    let width = (MINIMAL_WIDTH - MINIMAL_MARGIN * 2.0) * scale;
+    let row_height = MINIMAL_ROW_HEIGHT * scale;
+    let x = cursor[0] as f32;
+    let y = cursor[1] as f32;
+    if x < left || x >= left + width || y < top || y >= top + row_height * row_count as f32 {
+        return None;
+    }
+    Some(((y - top) / row_height).floor() as usize)
+}
+
 impl StockApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -117,7 +248,7 @@ impl StockApp {
         let search = StockSearch::spawn(Arc::new(move || search_ctx.request_repaint()))?;
         let chart_ctx = cc.egui_ctx.clone();
         let intraday = IntradayFeed::spawn(Arc::new(move || chart_ctx.request_repaint()))?;
-        let tray = Tray::new(cc.egui_ctx.clone()).ok();
+        let tray = Tray::new(cc.egui_ctx.clone(), settings.minimal_mode).ok();
         let (mut hotkey, mut hotkey_error) = match GlobalHotkey::new(cc, cc.egui_ctx.clone()) {
             Ok(hotkey) => (Some(hotkey), None),
             Err(error) => (None, Some(error)),
@@ -145,13 +276,15 @@ impl StockApp {
             updater.check_for_updates(settings.update_mirror.clone());
         }
         let mirror_draft = settings.update_mirror.clone().unwrap_or_default();
-        let last_size = vec2(380.0, initial_height(&settings));
+        let last_size = vec2(initial_width(&settings), initial_height(&settings));
         Ok(Self {
             settings,
             store,
             feed,
             intraday,
             chart_symbol: None,
+            minimal_hover_symbol: None,
+            minimal_popup_placement: None,
             chart_request: None,
             search,
             search_snapshot: SearchSnapshot::default(),
@@ -191,8 +324,13 @@ impl StockApp {
         let mut config = FeedConfig::from(&self.settings);
         config.paused = self.paused;
         self.feed.configure(config);
+        let chart_symbol = if self.settings.minimal_mode && self.settings.minimal_hover_chart {
+            self.minimal_hover_symbol.as_deref()
+        } else {
+            self.chart_symbol.as_deref()
+        };
         self.intraday.request(
-            self.chart_symbol.as_deref(),
+            chart_symbol,
             self.paused || self.settings_open,
         );
     }
@@ -203,14 +341,26 @@ impl StockApp {
         self.changed(false);
     }
 
+    fn set_minimal_mode(&mut self, active: bool, ctx: &egui::Context) {
+        if self.settings.minimal_mode == active {
+            return;
+        }
+        self.settings.minimal_mode = active;
+        self.minimal_hover_symbol = None;
+        if active {
+            self.settings_open = false;
+            self.chart_symbol = None;
+            self.close_add();
+        }
+        if let Some(tray) = &self.tray {
+            tray.set_minimal_mode(active);
+        }
+        self.apply_pin(ctx);
+        self.changed(false);
+    }
+
     fn apply_pin(&self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(
-            if self.settings.always_on_top {
-                egui::WindowLevel::AlwaysOnTop
-            } else {
-                egui::WindowLevel::Normal
-            },
-        ));
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(window_level(&self.settings)));
     }
 
     fn save(&mut self) {
@@ -236,6 +386,7 @@ impl StockApp {
             }
             Action::Hide => {
                 self.cancel_hotkey_recording();
+                self.minimal_hover_symbol = None;
                 if self.tray.is_some() || self.hotkey.as_ref().is_some_and(GlobalHotkey::is_active)
                 {
                     self.window_visible = false;
@@ -256,6 +407,7 @@ impl StockApp {
                 ctx,
             ),
             Action::TogglePin => self.pin(ctx),
+            Action::ExitMinimalMode => self.set_minimal_mode(false, ctx),
             Action::Reconnect => self.reconnect(),
             Action::CheckUpdate => {
                 self.action(Action::Show, ctx);
@@ -796,6 +948,142 @@ impl StockApp {
         });
     }
 
+    fn minimal_watchlist(
+        &mut self,
+        ctx: &egui::Context,
+        snapshot: &Snapshot,
+        list_pos: Pos2,
+        anchor: Option<[i32; 2]>,
+    ) {
+        let symbols = self.settings.symbols.clone();
+        let show_hover_chart = self.settings.minimal_hover_chart && self.window_drag.is_none();
+        let screen_hovered = show_hover_chart
+            .then(|| {
+                Some(minimal_hovered_row(
+                    platform::cursor_position()?,
+                    anchor?,
+                    ctx.pixels_per_point(),
+                    symbols.len(),
+                )?)
+            })
+            .flatten()
+            .and_then(|index| symbols.get(index).cloned());
+        let mut response_hovered = None;
+        egui::Area::new("minimal-watchlist".into())
+            .order(egui::Order::Middle)
+            .fixed_pos(list_pos + vec2(MINIMAL_MARGIN, MINIMAL_MARGIN))
+            .constrain(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.set_width(MINIMAL_WIDTH - MINIMAL_MARGIN * 2.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let drag_rect = Rect::from_min_size(
+                    ui.cursor().min,
+                    vec2(
+                        MINIMAL_WIDTH - MINIMAL_MARGIN * 2.0,
+                        symbols.len().max(1) as f32 * MINIMAL_ROW_HEIGHT,
+                    ),
+                );
+                self.drag_regions.push((drag_rect, ui.layer_id()));
+                for symbol in &symbols {
+                    let response = minimal_quote_row(ui, symbol, snapshot.quotes.get(symbol));
+                    if show_hover_chart && response.hovered() {
+                        response_hovered = Some(symbol.clone());
+                    }
+                }
+            });
+        // Expanding a right-edge popup moves the native window to the left. Windows can
+        // report the old client-relative pointer for a frame while that move is applied,
+        // so prefer the stable screen-space hit test and only fall back elsewhere.
+        let hovered = if cfg!(windows) && anchor.is_some() {
+            screen_hovered
+        } else {
+            response_hovered
+        };
+        if self.minimal_hover_symbol != hovered {
+            self.minimal_hover_symbol = hovered;
+            ctx.request_repaint();
+        }
+    }
+
+    fn minimal_chart_popup(
+        &self,
+        ctx: &egui::Context,
+        quotes: &Snapshot,
+        placement: MinimalPopupPlacement,
+    ) {
+        let Some(symbol) = self.minimal_hover_symbol.as_deref() else {
+            return;
+        };
+        let snapshot = self.intraday.latest();
+        let series = snapshot
+            .series
+            .as_deref()
+            .filter(|series| series.symbol == symbol);
+        let name = quotes
+            .quotes
+            .get(symbol)
+            .map(|quote| quote.name.as_str())
+            .or_else(|| series.map(|series| series.name.as_str()))
+            .unwrap_or(symbol);
+        egui::Area::new("minimal-hover-chart".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(placement.chart_pos)
+            .constrain(false)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(17, 23, 34, 244))
+                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(24)))
+                    .corner_radius(10)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width((placement.chart_width - 24.0).max(120.0));
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(name).size(15.0).strong())
+                                    .truncate(),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if let Some(series) = series {
+                                    ui.label(
+                                        RichText::new(series.date.format("%Y-%m-%d").to_string())
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(MUTED),
+                                    );
+                                }
+                            });
+                        });
+                        ui.add_space(4.0);
+                        if let Some(series) = series {
+                            intraday_chart::show(ui, series);
+                        } else {
+                            let (rect, _) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 216.0),
+                                Sense::hover(),
+                            );
+                            let message = if snapshot.loading
+                                || snapshot.symbol.as_deref() != Some(symbol)
+                            {
+                                "正在加载分时走势…"
+                            } else if snapshot.error.is_some() {
+                                "分时走势暂时加载失败"
+                            } else {
+                                "暂无分时走势"
+                            };
+                            ui.painter().text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                message,
+                                FontId::proportional(13.0),
+                                MUTED,
+                            );
+                        }
+                    });
+            });
+    }
+
     fn intraday_panel(&mut self, ui: &mut egui::Ui, symbol: &str, quotes: &Snapshot) {
         let snapshot = self.intraday.latest();
         let series = snapshot
@@ -988,6 +1276,32 @@ impl StockApp {
             .checkbox(&mut self.settings.compact, "紧凑显示")
             .changed()
         {
+            self.changed(false);
+        }
+        let mut minimal_mode = self.settings.minimal_mode;
+        if ui
+            .checkbox(&mut minimal_mode, "极简模式")
+            .on_hover_text("仅显示股票名、股价和涨跌幅")
+            .changed()
+        {
+            self.set_minimal_mode(minimal_mode, ui.ctx());
+            ui.ctx().request_repaint();
+        }
+        ui.label(
+            RichText::new("极简模式隐藏所有背景和控件；可从系统托盘右键退出")
+                .size(11.0)
+                .color(MUTED),
+        );
+        if ui
+            .checkbox(
+                &mut self.settings.minimal_hover_chart,
+                "极简模式悬停显示分时图",
+            )
+            .changed()
+        {
+            if !self.settings.minimal_hover_chart {
+                self.minimal_hover_symbol = None;
+            }
             self.changed(false);
         }
         ui.add_space(8.0);
@@ -1449,8 +1763,17 @@ impl eframe::App for StockApp {
                     let allowed = self.drag_regions.iter().any(|(rect, layer)| {
                         rect.contains(*pos) && ctx.layer_id_at(*pos) == Some(*layer)
                     });
-                    if allowed && let Some([x, y]) = self.settings.position {
-                        let offset = pos.to_vec2() * ctx.pixels_per_point();
+                    let drag_origin = self
+                        .minimal_popup_placement
+                        .map(|placement| placement.anchor)
+                        .or(self.settings.position);
+                    if allowed && let Some([x, y]) = drag_origin {
+                        if self.minimal_popup_placement.is_some() {
+                            self.minimal_hover_symbol = None;
+                            ctx.request_repaint();
+                        }
+                        let local_pointer = minimal_drag_pointer(*pos, self.minimal_popup_placement);
+                        let offset = local_pointer * ctx.pixels_per_point();
                         self.window_drag = Some(WindowDrag {
                             offset,
                             press_screen: vec2(x as f32, y as f32) + offset,
@@ -1504,7 +1827,23 @@ impl eframe::App for StockApp {
             }
             self.action(event, ctx);
         }
-        if let Some(position) = platform::position(frame)
+        let popup_requested = self.settings.minimal_mode
+            && self.settings.minimal_hover_chart
+            && self.minimal_hover_symbol.is_some();
+        let restored_popup = if !popup_requested {
+            self.minimal_popup_placement.take()
+        } else {
+            None
+        };
+        if let Some(placement) = restored_popup {
+            let scale = ctx.pixels_per_point();
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(
+                placement.anchor[0] as f32 / scale,
+                placement.anchor[1] as f32 / scale,
+            )));
+            self.settings.position = Some(placement.anchor);
+        } else if self.minimal_popup_placement.is_none()
+            && let Some(position) = platform::position(frame)
             && self.settings.position != Some(position)
         {
             self.settings.position = Some(position);
@@ -1519,7 +1858,7 @@ impl eframe::App for StockApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if let Some(drag) = self.window_drag.as_mut()
             && let Some([x, y]) = platform::cursor_position()
@@ -1532,7 +1871,9 @@ impl eframe::App for StockApp {
             }
         }
         self.drag_regions.clear();
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma)) {
+        if !self.settings.minimal_mode
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Comma))
+        {
             self.settings_open = !self.settings_open;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::R)) {
@@ -1559,8 +1900,38 @@ impl eframe::App for StockApp {
         }
 
         self.search_snapshot = self.search.latest();
-        let warning_height = if self.warning.is_some() { 34.0 } else { 0.0 };
-        let update_banner_height = if !self.dismiss_update_banner
+        let popup_requested = self.settings.minimal_mode
+            && self.settings.minimal_hover_chart
+            && self.minimal_hover_symbol.is_some();
+        if popup_requested
+            && self.minimal_popup_placement.is_none()
+            && let Some(anchor) = self.settings.position.or_else(|| platform::position(frame))
+        {
+            let work = platform::work_area(frame).unwrap_or([
+                anchor[0] - 10_000,
+                anchor[1] - 10_000,
+                anchor[0] + 10_000,
+                anchor[1] + 10_000,
+            ]);
+            let placement = minimal_popup_placement(
+                anchor,
+                work,
+                ctx.pixels_per_point(),
+                initial_height(&self.settings),
+            );
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(
+                placement.origin[0] as f32 / ctx.pixels_per_point(),
+                placement.origin[1] as f32 / ctx.pixels_per_point(),
+            )));
+            self.minimal_popup_placement = Some(placement);
+        }
+        let warning_height = if !self.settings.minimal_mode && self.warning.is_some() {
+            34.0
+        } else {
+            0.0
+        };
+        let update_banner_height = if !self.settings.minimal_mode
+            && !self.dismiss_update_banner
             && !self.settings_open
             && matches!(
                 self.updater.state(),
@@ -1570,37 +1941,79 @@ impl eframe::App for StockApp {
         } else {
             0.0
         };
-        let desired_height = if self.settings_open {
+        let desired_height = if self.settings.minimal_mode {
+            self.minimal_popup_placement
+                .map(|placement| placement.size.y)
+                .unwrap_or_else(|| initial_height(&self.settings))
+        } else if self.settings_open {
             680.0
         } else if self.chart_symbol.is_some() {
             500.0
         } else {
             initial_height(&self.settings) + self.add_height()
-        } + warning_height + update_banner_height;
-        let desired = vec2(380.0, desired_height);
+        } + warning_height
+            + update_banner_height;
+        let desired_width = self
+            .minimal_popup_placement
+            .map(|placement| placement.size.x)
+            .unwrap_or_else(|| initial_width(&self.settings));
+        let desired = vec2(desired_width, desired_height);
         if self.last_size != desired {
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(desired));
             self.last_size = desired;
         }
         let snapshot = self.feed.latest();
         let alpha = (self.settings.opacity * 255.0).round() as u8;
+        let minimal_mode = self.settings.minimal_mode;
         egui::Frame::new()
-            .fill(Color32::from_rgba_unmultiplied(17, 23, 34, alpha))
+            .fill(if minimal_mode {
+                Color32::TRANSPARENT
+            } else {
+                Color32::from_rgba_unmultiplied(17, 23, 34, alpha)
+            })
             .stroke(Stroke::NONE)
-            .corner_radius(12)
-            .inner_margin(16)
+            .corner_radius(if minimal_mode { 0 } else { 12 })
+            .inner_margin(if minimal_mode {
+                MINIMAL_MARGIN as i8
+            } else {
+                16
+            })
             .show(ui, |ui| {
-                ui.set_min_size(desired - vec2(32.0, 32.0));
+                let margin = if minimal_mode {
+                    MINIMAL_MARGIN * 2.0
+                } else {
+                    32.0
+                };
+                ui.set_min_size(desired - vec2(margin, margin));
                 let background_drag = ui.interact(
                     ui.max_rect(),
                     ui.id().with("background-drag"),
                     Sense::drag(),
                 );
-                self.header(ui);
-                ui.add_space(7.0);
-                self.status(ui, &snapshot);
-                ui.add_space(9.0);
-                if let Some(warning) = self.warning.clone() {
+                if minimal_mode {
+                    let placement = self.minimal_popup_placement;
+                    let anchor = placement
+                        .map(|placement| placement.anchor)
+                        .or_else(|| platform::position(frame))
+                        .or(self.settings.position);
+                    self.minimal_watchlist(
+                        ui.ctx(),
+                        &snapshot,
+                        placement
+                            .map(|placement| placement.list_pos)
+                            .unwrap_or(Pos2::ZERO),
+                        anchor,
+                    );
+                    if let Some(placement) = placement {
+                        self.minimal_chart_popup(ui.ctx(), &snapshot, placement);
+                    }
+                } else {
+                    self.header(ui);
+                    ui.add_space(7.0);
+                    self.status(ui, &snapshot);
+                    ui.add_space(9.0);
+                }
+                if !minimal_mode && let Some(warning) = self.warning.clone() {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(warning).size(10.5).color(AMBER));
                         if ui.small_button("知道了").clicked() {
@@ -1608,7 +2021,7 @@ impl eframe::App for StockApp {
                         }
                     });
                 }
-                if !self.dismiss_update_banner && !self.settings_open {
+                if !minimal_mode && !self.dismiss_update_banner && !self.settings_open {
                     match self.updater.state() {
                         UpdateState::Available(info) => {
                             ui.horizontal(|ui| {
@@ -1648,7 +2061,9 @@ impl eframe::App for StockApp {
                         _ => {}
                     }
                 }
-                if self.settings_open {
+                if minimal_mode {
+                    // The text-only watchlist above is the complete minimal UI.
+                } else if self.settings_open {
                     egui::ScrollArea::vertical()
                         .id_salt("settings-scroll")
                         .auto_shrink([false, false])
@@ -1666,11 +2081,17 @@ impl eframe::App for StockApp {
         if self.drag_released {
             self.window_drag = None;
             self.drag_released = false;
+            ctx.request_repaint();
         }
         if !self.settings_open {
             self.cancel_hotkey_recording();
         }
-        let request = (self.chart_symbol.clone(), self.paused || self.settings_open);
+        let requested_symbol = if self.settings.minimal_mode && self.settings.minimal_hover_chart {
+            self.minimal_hover_symbol.clone()
+        } else {
+            self.chart_symbol.clone()
+        };
+        let request = (requested_symbol, self.paused || self.settings_open);
         if self.chart_request.as_ref() != Some(&request) {
             self.intraday.request(request.0.as_deref(), request.1);
             self.chart_request = Some(request);
@@ -1840,6 +2261,69 @@ fn quote_row(
             .unwrap_or_else(|| "正在等待有效行情；代码无效或网络中断时不会显示虚构价格。".into())
     };
     response.on_hover_text(tooltip)
+}
+
+fn minimal_quote_row(
+    ui: &mut egui::Ui,
+    symbol: &str,
+    quote: Option<&Quote>,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(MINIMAL_WIDTH - MINIMAL_MARGIN * 2.0, MINIMAL_ROW_HEIGHT),
+        Sense::drag(),
+    );
+    let color = match quote.and_then(Quote::change) {
+        Some(change) if change > 0.0 => RED,
+        Some(change) if change < 0.0 => GREEN,
+        _ => MUTED,
+    };
+    let name = quote.map(|quote| quote.name.as_str()).unwrap_or(symbol);
+    let price = quote
+        .and_then(|quote| {
+            quote
+                .price
+                .map(|price| format!("{:.*}", quote.decimals(), price))
+        })
+        .unwrap_or_else(|| "—".into());
+    let change = quote
+        .and_then(Quote::change_percent)
+        .map(|change| format!("{change:+.2}%"))
+        .unwrap_or_else(|| "—".into());
+    let painter = ui.painter();
+    painter
+        .with_clip_rect(Rect::from_min_max(
+            rect.min,
+            pos2(rect.right() - 170.0, rect.bottom()),
+        ))
+        .text(
+            rect.left_center(),
+            Align2::LEFT_CENTER,
+            name,
+            FontId::proportional(14.0),
+            TEXT,
+        );
+    painter.text(
+        pos2(rect.right() - 82.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        &price,
+        FontId::monospace(16.0),
+        color,
+    );
+    painter.text(
+        rect.right_center(),
+        Align2::RIGHT_CENTER,
+        &change,
+        FontId::monospace(13.0),
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            true,
+            format!("{name} {price} {change}"),
+        )
+    });
+    response
 }
 
 #[derive(Clone, Copy)]
@@ -2064,5 +2548,82 @@ mod tests {
                 Some("hk00700")
             );
         }
+    }
+
+    #[test]
+    fn minimal_mode_uses_a_text_only_size_for_all_rows() {
+        let settings = Settings {
+            minimal_mode: true,
+            symbols: vec!["sh000001".into(), "sh600519".into(), "hk00700".into()],
+            ..Settings::default()
+        };
+        assert_eq!(initial_width(&settings), MINIMAL_WIDTH);
+        assert_eq!(
+            initial_height(&settings),
+            MINIMAL_MARGIN * 2.0 + MINIMAL_ROW_HEIGHT * 3.0
+        );
+    }
+
+    #[test]
+    fn minimal_mode_is_always_on_top_without_changing_the_saved_pin_preference() {
+        let mut settings = Settings {
+            always_on_top: false,
+            ..Settings::default()
+        };
+        assert_eq!(window_level(&settings), egui::WindowLevel::Normal);
+        settings.minimal_mode = true;
+        assert_eq!(window_level(&settings), egui::WindowLevel::AlwaysOnTop);
+        assert!(!settings.always_on_top);
+    }
+
+    #[test]
+    fn minimal_popup_chooses_a_visible_side_and_keeps_the_watchlist_anchored() {
+        let work = [0, 0, 1920, 1080];
+        let right = minimal_popup_placement([100, 100], work, 1.0, 102.0);
+        assert_eq!(right.origin, [100, 100]);
+        assert_eq!(right.list_pos, Pos2::ZERO);
+        assert_eq!(right.chart_pos, pos2(300.0, 0.0));
+
+        let left = minimal_popup_placement([1700, 100], work, 1.0, 102.0);
+        assert_eq!(left.origin, [1320, 100]);
+        assert_eq!(left.list_pos, pos2(380.0, 0.0));
+        assert_eq!(left.chart_pos, Pos2::ZERO);
+    }
+
+    #[test]
+    fn minimal_popup_moves_above_when_horizontal_and_lower_space_are_tight() {
+        let placement = minimal_popup_placement([150, 850], [0, 0, 600, 1080], 1.0, 102.0);
+        assert_eq!(placement.origin, [150, 574]);
+        assert_eq!(placement.list_pos, pos2(0.0, 276.0));
+        assert_eq!(placement.chart_pos, Pos2::ZERO);
+        assert!(placement.origin[1] + placement.size.y as i32 <= 1080);
+    }
+
+    #[test]
+    fn minimal_drag_uses_watchlist_coordinates_when_popup_is_on_the_left() {
+        let placement = minimal_popup_placement([1700, 100], [0, 0, 1920, 1080], 1.0, 102.0);
+        let pointer = placement.list_pos + vec2(42.0, 18.0);
+        assert_eq!(
+            minimal_drag_pointer(pointer, Some(placement)),
+            vec2(42.0, 18.0)
+        );
+    }
+
+    #[test]
+    fn minimal_hover_stays_on_the_anchored_row_when_popup_expands_left() {
+        let placement = minimal_popup_placement([1700, 0], [0, 0, 1920, 1080], 1.0, 102.0);
+        assert!(placement.origin[0] < placement.anchor[0]);
+        assert_eq!(
+            minimal_hovered_row([1750, 21], placement.anchor, 1.0, 3),
+            Some(0)
+        );
+        assert_eq!(
+            minimal_hovered_row([1750, 51], placement.anchor, 1.0, 3),
+            Some(1)
+        );
+        assert_eq!(
+            minimal_hovered_row([1699, 21], placement.anchor, 1.0, 3),
+            None
+        );
     }
 }

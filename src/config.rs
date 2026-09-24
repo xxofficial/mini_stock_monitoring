@@ -26,6 +26,8 @@ pub struct Settings {
     pub opacity: f32,
     pub always_on_top: bool,
     pub compact: bool,
+    pub minimal_mode: bool,
+    pub minimal_hover_chart: bool,
     pub poll_seconds: u64,
     pub feed_mode: FeedMode,
     pub position: Option<[i32; 2]>,
@@ -42,6 +44,8 @@ impl Default for Settings {
             opacity: 0.92,
             always_on_top: true,
             compact: false,
+            minimal_mode: false,
+            minimal_hover_chart: true,
             poll_seconds: 3,
             feed_mode: FeedMode::Auto,
             position: None,
@@ -158,12 +162,16 @@ mod tests {
         store.save(&settings).unwrap();
         settings.symbols.clear();
         settings.opacity = 0.0;
+        settings.minimal_mode = true;
+        settings.minimal_hover_chart = false;
         settings.position = Some([-1000, 240]);
         store.save(&settings).unwrap();
         let (loaded, warning) = store.load();
         assert!(warning.is_none());
         assert!(loaded.symbols.is_empty());
         assert_eq!(loaded.opacity, 0.0);
+        assert!(loaded.minimal_mode);
+        assert!(!loaded.minimal_hover_chart);
         assert_eq!(loaded.position, settings.position);
     }
 
@@ -224,6 +232,8 @@ mod tests {
     fn old_settings_gain_the_default_hotkey_and_custom_or_disabled_keys_persist() {
         let old: Settings =
             serde_json::from_str(r#"{"opacity":0.5,"symbols":["hk00700"]}"#).unwrap();
+        assert!(!old.minimal_mode);
+        assert!(old.minimal_hover_chart);
         assert_eq!(
             old.visibility_hotkey.as_deref(),
             Some(DEFAULT_VISIBILITY_HOTKEY)
