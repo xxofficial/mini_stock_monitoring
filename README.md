@@ -16,6 +16,17 @@
 > [!IMPORTANT]
 > 本项目仅用于行情展示与技术交流，不提供交易功能，也不构成任何投资建议。第三方公开行情接口可能存在延迟、错误或不可用，请勿将其作为交易决策的唯一依据。
 
+## 界面预览
+
+<div align="center">
+  <img src="assets/screenshots/intraday-chart.png" alt="分时走势界面" width="380">
+  <img src="assets/screenshots/watchlist.png" alt="自选列表界面" width="380">
+</div>
+
+<p align="center">
+  <img src="assets/screenshots/minimal-mode.png" alt="极简模式界面" width="696">
+</p>
+
 ## 主要功能
 
 - **桌面悬浮显示**：无边框、可拖动、可置顶，背景支持 0%–100% 不透明度，文字始终保持清晰。
