@@ -25,10 +25,11 @@ eframe = { version = "0.36.2", default-features = false, features = ["glow", "de
 encoding_rs = "0.8"
 futures-util = { version = "0.3", features = ["sink"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy"] }
+semver = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util", "fs"] }
 tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 
 [target.'cfg(windows)'.dependencies]

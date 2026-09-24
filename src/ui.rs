@@ -15,6 +15,9 @@ use mini_stock_monitor::{
     intraday::IntradayFeed,
     quote::{Quote, normalize_symbol, price_decimals},
     search::{MAX_QUERY_CHARS, MAX_RESULTS, SearchSnapshot, StockSearch},
+    update::{
+        CURRENT_VERSION, GITHUB_OWNER, GITHUB_REPO, UpdateManager, UpdateState,
+    },
 };
 
 use crate::{
@@ -83,6 +86,9 @@ pub struct StockApp {
     drag_regions: Vec<(Rect, egui::LayerId)>,
     window_drag: Option<WindowDrag>,
     drag_released: bool,
+    updater: UpdateManager,
+    dismiss_update_banner: bool,
+    mirror_draft: String,
 }
 
 struct WindowDrag {
@@ -133,6 +139,12 @@ impl StockApp {
             .unwrap_or(DEFAULT_VISIBILITY_HOTKEY)
             .parse()
             .ok();
+        let wake_update_ctx = cc.egui_ctx.clone();
+        let updater = UpdateManager::new(Arc::new(move || wake_update_ctx.request_repaint()));
+        if settings.auto_check_update {
+            updater.check_for_updates(settings.update_mirror.clone());
+        }
+        let mirror_draft = settings.update_mirror.clone().unwrap_or_default();
         let last_size = vec2(380.0, initial_height(&settings));
         Ok(Self {
             settings,
@@ -162,6 +174,9 @@ impl StockApp {
             drag_regions: Vec::new(),
             window_drag: None,
             drag_released: false,
+            updater,
+            dismiss_update_banner: false,
+            mirror_draft,
         })
     }
 
@@ -242,6 +257,11 @@ impl StockApp {
             ),
             Action::TogglePin => self.pin(ctx),
             Action::Reconnect => self.reconnect(),
+            Action::CheckUpdate => {
+                self.action(Action::Show, ctx);
+                self.settings_open = true;
+                self.updater.check_for_updates(self.settings.update_mirror.clone());
+            }
             Action::Exit => {
                 self.cancel_hotkey_recording();
                 self.save();
@@ -1064,12 +1084,223 @@ impl StockApp {
                     .color(MUTED),
             );
         });
+        ui.add_space(12.0);
+        ui.separator();
+        self.update_settings(ui);
         ui.add_space(10.0);
         ui.label(
             RichText::new("设置自动保存 · Ctrl+, 返回 · Ctrl+R 重连")
                 .size(10.5)
                 .color(MUTED),
         );
+    }
+
+    fn update_settings(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("软件更新").size(15.0).strong());
+        ui.add_space(5.0);
+
+        let update_state = self.updater.state();
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("当前版本：v{CURRENT_VERSION}"))
+                    .size(12.0)
+                    .color(MUTED),
+            );
+            match &update_state {
+                UpdateState::Checking => {
+                    ui.spinner();
+                    ui.label(RichText::new("正在检查更新...").size(12.0).color(MUTED));
+                }
+                UpdateState::UpToDate { .. } => {
+                    ui.label(RichText::new("已是最新版本").size(12.0).color(GREEN));
+                    if ui.small_button("重新检查").clicked() {
+                        self.updater
+                            .check_for_updates(self.settings.update_mirror.clone());
+                    }
+                }
+                UpdateState::Idle => {
+                    if ui.button("检查更新").clicked() {
+                        self.updater
+                            .check_for_updates(self.settings.update_mirror.clone());
+                    }
+                }
+                UpdateState::Failed(_) => {
+                    if ui.button("重新检查").clicked() {
+                        self.updater
+                            .check_for_updates(self.settings.update_mirror.clone());
+                    }
+                }
+                _ => {}
+            }
+        });
+
+        match update_state {
+            UpdateState::Available(info) => {
+                ui.add_space(6.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(28, 35, 48))
+                    .stroke(Stroke::new(1.0, AMBER))
+                    .corner_radius(6)
+                    .inner_margin(10)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("🎉 发现新版本 v{}", info.version))
+                                .size(13.5)
+                                .strong()
+                                .color(AMBER),
+                        );
+                        if info.size > 0 {
+                            ui.label(
+                                RichText::new(format!(
+                                    "安装包大小：{:.2} MB",
+                                    info.size as f64 / 1_048_576.0
+                                ))
+                                .size(11.0)
+                                .color(MUTED),
+                            );
+                        }
+                        if !info.changelog.trim().is_empty() {
+                            ui.add_space(4.0);
+                            egui::CollapsingHeader::new("更新内容说明")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(&info.changelog).size(11.0).color(TEXT),
+                                    );
+                                });
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(RichText::new("⬇ 立即下载并更新").strong())
+                                .clicked()
+                            {
+                                self.updater.start_download(
+                                    info.clone(),
+                                    self.settings.update_mirror.clone(),
+                                );
+                            }
+                            ui.hyperlink_to("在浏览器查看", &info.html_url);
+                        });
+                    });
+            }
+            UpdateState::Downloading {
+                info,
+                downloaded,
+                total,
+            } => {
+                ui.add_space(6.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(28, 35, 48))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(70, 90, 120)))
+                    .corner_radius(6)
+                    .inner_margin(10)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("正在下载 v{} 安装包...", info.version))
+                                .size(13.0)
+                                .strong(),
+                        );
+                        let progress = if total > 0 {
+                            (downloaded as f32 / total as f32).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let dl_mb = downloaded as f64 / 1_048_576.0;
+                        let total_mb = total as f64 / 1_048_576.0;
+                        ui.add(
+                            egui::ProgressBar::new(progress).text(format!(
+                                "{:.1} MB / {:.1} MB ({:.0}%)",
+                                dl_mb,
+                                total_mb,
+                                progress * 100.0
+                            )),
+                        );
+                        ui.add_space(4.0);
+                        if ui.button("取消下载").clicked() {
+                            self.updater.cancel_download();
+                        }
+                    });
+            }
+            UpdateState::ReadyToInstall {
+                info,
+                installer_path,
+            } => {
+                ui.add_space(6.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(24, 42, 34))
+                    .stroke(Stroke::new(1.0, GREEN))
+                    .corner_radius(6)
+                    .inner_margin(10)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("新版本 v{} 安装包已就绪！", info.version))
+                                .size(13.5)
+                                .strong()
+                                .color(GREEN),
+                        );
+                        ui.label(
+                            RichText::new("安装时将自动关闭当前程序，安装完成后自动重启。")
+                                .size(11.0)
+                                .color(MUTED),
+                        );
+                        ui.add_space(6.0);
+                        if ui
+                            .button(
+                                RichText::new("🚀 立即安装并重启")
+                                    .strong()
+                                    .color(Color32::BLACK),
+                            )
+                            .clicked()
+                        {
+                            if let Err(err) = UpdateManager::install_and_exit(&installer_path) {
+                                self.warning = Some(format!("启动更新安装包失败: {err}"));
+                            }
+                        }
+                    });
+            }
+            UpdateState::Failed(err) => {
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("更新检查失败：{err}")).size(11.0).color(RED));
+                ui.hyperlink_to(
+                    "手动前往 GitHub Releases 下载",
+                    format!("https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"),
+                );
+            }
+            _ => {}
+        }
+
+        ui.add_space(8.0);
+        if ui
+            .checkbox(&mut self.settings.auto_check_update, "启动时自动检查更新")
+            .changed()
+        {
+            self.changed(false);
+        }
+
+        egui::CollapsingHeader::new("网络加速镜像设置 (如直连 GitHub 困难)")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("若无法访问 GitHub，可配置前缀加速镜像，如 https://ghproxy.net")
+                        .size(10.5)
+                        .color(MUTED),
+                );
+                let mut mirror_text = self.mirror_draft.clone();
+                let edit = ui.text_edit_singleline(&mut mirror_text);
+                if edit.changed() {
+                    self.mirror_draft = mirror_text.clone();
+                    let trimmed = mirror_text.trim();
+                    self.settings.update_mirror = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                    self.changed(false);
+                }
+            });
     }
 
     fn apply_hotkey(&mut self, enabled: bool) {
@@ -1329,13 +1560,23 @@ impl eframe::App for StockApp {
 
         self.search_snapshot = self.search.latest();
         let warning_height = if self.warning.is_some() { 34.0 } else { 0.0 };
+        let update_banner_height = if !self.dismiss_update_banner
+            && !self.settings_open
+            && matches!(
+                self.updater.state(),
+                UpdateState::Available(_) | UpdateState::ReadyToInstall { .. }
+            ) {
+            30.0
+        } else {
+            0.0
+        };
         let desired_height = if self.settings_open {
-            660.0
+            680.0
         } else if self.chart_symbol.is_some() {
             500.0
         } else {
             initial_height(&self.settings) + self.add_height()
-        } + warning_height;
+        } + warning_height + update_banner_height;
         let desired = vec2(380.0, desired_height);
         if self.last_size != desired {
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(desired));
@@ -1366,6 +1607,46 @@ impl eframe::App for StockApp {
                             self.warning = None;
                         }
                     });
+                }
+                if !self.dismiss_update_banner && !self.settings_open {
+                    match self.updater.state() {
+                        UpdateState::Available(info) => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("🎉 发现新版本 v{}", info.version))
+                                        .size(10.5)
+                                        .color(AMBER),
+                                );
+                                if ui.small_button("查看更新").clicked() {
+                                    self.settings_open = true;
+                                }
+                                if ui.small_button("稍后").clicked() {
+                                    self.dismiss_update_banner = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
+                        UpdateState::ReadyToInstall {
+                            info,
+                            installer_path,
+                        } => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("✨ v{} 安装包已就绪", info.version))
+                                        .size(10.5)
+                                        .color(GREEN),
+                                );
+                                if ui.small_button("立即重启安装").clicked() {
+                                    let _ = UpdateManager::install_and_exit(&installer_path);
+                                }
+                                if ui.small_button("稍后").clicked() {
+                                    self.dismiss_update_banner = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
+                        _ => {}
+                    }
                 }
                 if self.settings_open {
                     egui::ScrollArea::vertical()

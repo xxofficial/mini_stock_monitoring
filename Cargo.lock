@@ -1919,6 +1919,7 @@ dependencies = [
  "futures-util",
  "raw-window-handle",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

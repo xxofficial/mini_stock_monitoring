@@ -5,6 +5,7 @@ pub enum Action {
     ToggleVisible,
     TogglePin,
     Reconnect,
+    CheckUpdate,
     Exit,
 }
 
@@ -26,12 +27,14 @@ impl Tray {
         let hide = MenuItem::new("隐藏窗口", true, None);
         let pin = MenuItem::new("切换置顶", true, None);
         let reconnect = MenuItem::new("重新连接行情", true, None);
+        let check_update = MenuItem::new("检查更新", true, None);
         let exit = MenuItem::new("退出", true, None);
         menu.append_items(&[
             &show,
             &hide,
             &pin,
             &reconnect,
+            &check_update,
             &PredefinedMenuItem::separator(),
             &exit,
         ])
@@ -41,6 +44,7 @@ impl Tray {
             (hide.id().clone(), Action::Hide),
             (pin.id().clone(), Action::TogglePin),
             (reconnect.id().clone(), Action::Reconnect),
+            (check_update.id().clone(), Action::CheckUpdate),
             (exit.id().clone(), Action::Exit),
         ];
         let icon = tray_icon::Icon::from_rgba(crate::platform::icon_rgba(), 32, 32)

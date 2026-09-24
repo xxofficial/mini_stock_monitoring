@@ -30,6 +30,8 @@ pub struct Settings {
     pub feed_mode: FeedMode,
     pub position: Option<[i32; 2]>,
     pub visibility_hotkey: Option<String>,
+    pub auto_check_update: bool,
+    pub update_mirror: Option<String>,
 }
 
 impl Default for Settings {
@@ -44,6 +46,8 @@ impl Default for Settings {
             feed_mode: FeedMode::Auto,
             position: None,
             visibility_hotkey: Some(DEFAULT_VISIBILITY_HOTKEY.into()),
+            auto_check_update: true,
+            update_mirror: None,
         }
     }
 }
