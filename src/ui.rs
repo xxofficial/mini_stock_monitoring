@@ -2300,7 +2300,7 @@ fn minimal_quote_row(
             Align2::LEFT_CENTER,
             name,
             FontId::proportional(14.0),
-            TEXT,
+            color,
         );
     painter.text(
         pos2(rect.right() - 82.0, rect.center().y),
