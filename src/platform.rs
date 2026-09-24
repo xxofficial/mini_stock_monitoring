@@ -1,4 +1,4 @@
-pub const WINDOW_TITLE: &str = "微行情 · Mini Stock Monitor";
+pub const WINDOW_TITLE: &str = "微行情";
 
 pub fn icon_rgba() -> Vec<u8> {
     let mut pixels = vec![0u8; 32 * 32 * 4];

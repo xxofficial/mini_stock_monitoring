@@ -1,6 +1,6 @@
 <div align="center">
 
-# 微行情 · Mini Stock Monitor
+# 微行情
 
 **一款轻量、透明、常驻桌面的 Windows 股票行情悬浮窗**
 
@@ -29,13 +29,13 @@
 
 ## 快速开始
 
-### 下载便携版
+### 下载与安装
 
 1. 打开项目的 [Releases 页面](https://github.com/xxofficial/mini_stock_monitoring/releases)。
-2. 下载 `MiniStockMonitor-windows-x64.zip`。
-3. 解压后双击 `mini-stock-monitor.exe`。
+2. 下载并运行 `微行情-<版本号>-windows-x64-setup.exe`。
+3. 按安装向导操作；“创建桌面快捷方式”默认勾选，也可以按需取消。
 
-当前版本面向 **Windows 10/11 x64**，显卡驱动需要支持 OpenGL 3.3。程序为便携版，无需安装；整个目录可以移动到任意位置。
+当前版本面向 **Windows 10/11 x64**，显卡驱动需要支持 OpenGL 3.3。安装程序会创建开始菜单快捷方式，并可选创建桌面快捷方式；卸载入口位于 Windows 的“已安装的应用”。如需免安装使用，也可以下载 `MiniStockMonitor-windows-x64.zip`，解压后双击 `微行情.exe`。
 
 首次启动默认显示上证指数、贵州茅台和平安银行。若 Releases 暂无可下载文件，也可以按照下方说明从源码运行。
 
@@ -114,7 +114,8 @@ cargo clippy --locked --all-targets -- -D warnings
 # 构建发布版本
 cargo build --locked --release --bin mini-stock-monitor
 
-# 生成便携目录、ZIP 和 SHA-256 校验文件
+# 生成 Windows 安装程序、便携版 ZIP 和 SHA-256 校验文件
+# 需要预先安装 Inno Setup 6
 powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
 
@@ -123,6 +124,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 ```text
 dist/MiniStockMonitor/
 dist/MiniStockMonitor/LICENSE
+dist/微行情-0.1.0-windows-x64-setup.exe
 dist/MiniStockMonitor-windows-x64.zip
 dist/SHA256SUMS.txt
 ```
