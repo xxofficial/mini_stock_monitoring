@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A small, transparent desktop stock monitor for Windows"
+license = "MIT"
 default-run = "mini-stock-monitor"
 
 [lib]

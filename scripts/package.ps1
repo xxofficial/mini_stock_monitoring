@@ -10,6 +10,7 @@ try {
     $null = New-Item -ItemType Directory -Path $releaseDirectory -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'target\release\mini-stock-monitor.exe') -Destination $releaseDirectory -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $releaseDirectory -Force
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $releaseDirectory -Force
     $archivePath = Join-Path $projectRoot 'dist\MiniStockMonitor-windows-x64.zip'
     Compress-Archive -LiteralPath $releaseDirectory -DestinationPath $archivePath -Force
     $checksum = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
